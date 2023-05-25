@@ -4,6 +4,7 @@ import time
 from Queue import Queue
 from enum import Enum
 from scipy.optimize import curve_fit
+import copy
 
 
 class Direction(Enum):
@@ -19,9 +20,9 @@ class Tracker:
         self.x1 = self.position[0] - self.width//2
         self.x2 = self.position[0] + self.width//2
         self.y = self.position[1]
-        self.value = 50
         self.pointer_x = position[0]
-        self.is_active = False
+        self.is_active = True
+        self.deviation = 0
 
     def draw(self, image):
         color = None
@@ -30,6 +31,8 @@ class Tracker:
         else:
             color = (0, 0, 255)
 
+        cv2.putText(image, self.get_direction().name + " " + str(round(self.deviation, 2)),
+                    (self.position[0]-100, self.position[1]-20), 1, 2, (0, 0, 255), 2)
         cv2.line(image, (self.pointer_x, self.y-10), (self.pointer_x, self.y+10), color, 3)
         cv2.line(image, (self.x1, self.y), (self.x2, self.y), color, 3)
     
@@ -39,7 +42,13 @@ class Tracker:
         lane_x2 = None
 
         for i in range(self.width+1):
-            if mask[self.y, self.x1 + i, 0] == 255:
+            if (np.any(mask[self.y, self.x1:self.position[0], 0] == 255) and \
+                self.pointer_x <= self.position[0]) or \
+                (np.any(mask[self.y, self.position[0]:self.x2, 0] == 255) and \
+                self.pointer_x >= self.position[0]):
+                self.is_active = True
+
+            if self.is_active and mask[self.y, self.x1 + i, 0] == 255:
                 lane_x1 = self.x1 + i
                 lane_x2 = lane_x1
                 i += 1
@@ -58,8 +67,20 @@ class Tracker:
         if center_of_lane_x:
             self.is_active = True
             self.pointer_x = center_of_lane_x
+
+            self.deviation = (self.pointer_x-self.position[0])/(self.width//2)*100
         else:
             self.is_active = False
+
+        return self.get_direction()
+
+    def get_direction(self):
+        if self.deviation < -20:
+            return Direction.LEFT
+        elif self.deviation > 20:
+            return Direction.RIGHT
+        return Direction.STRAIGHT
+
         
 
 
@@ -138,47 +159,91 @@ class LaneDetector:
                 return Direction.LEFT
             else:
                 return Direction.RIGHT
-        
+            
         return Direction.STRAIGHT
-
+    
     def __call__(self, image):
+        direction = None
         mask = self.apply_mask(image)
         mask = self.get_roi(mask)
         self.get_distances(mask)
         is_approaching_lane = self.is_approaching_lane()
         if is_approaching_lane:
-            turn = self.check_turn(mask)
-            cv2.putText(mask, turn.name, (100, 100), 1, 3, (0, 0, 255), 2)
+            direction = self.check_turn(mask)
+            cv2.putText(mask, direction.name + " turn detected", (100, 100), 1, 3, (0, 0, 255), 2)
+        else:
+            direction = Direction.STRAIGHT
+            cv2.putText(mask, direction.name, (100, 100), 1, 3, (0, 0, 255), 2)
 
         self.draw(mask)
 
+        return mask, direction
+    
+
+class Car:
+    def __init__(self) -> None:
+        self.lane_detector = LaneDetector()
+        self.left_tracker = Tracker((300, 400), 190)
+        self.right_tracker = Tracker((950, 400), 190)
+        # self.left_tracker = Tracker((250, 500), 190)
+        # self.right_tracker = Tracker((950, 500), 190)
+        self.direction = Direction.STRAIGHT
+        self.turn = None
+
+    
+    def __call__(self, frame):
+        mask, turn = self.lane_detector(frame)
+
+        self.turn = turn
+        
+        left_tracker_direction = self.left_tracker.track(mask)
+        right_tracker_direction = self.right_tracker.track(mask)
+
+
+        if self.turn.value == Direction.STRAIGHT.value:
+            if left_tracker_direction.value == Direction.STRAIGHT.value:
+                self.direction = left_tracker_direction
+            elif right_tracker_direction.value == Direction.STRAIGHT.value:
+                self.direction = right_tracker_direction
+            else:
+                self.direction = right_tracker_direction
+        else:
+            if self.turn.value == Direction.LEFT.value:
+                if self.left_tracker.is_active:
+                    self.direction = right_tracker_direction
+                    self.turn = Direction.STRAIGHT
+                else:
+                    self.direction = self.turn
+            elif self.turn.value == Direction.RIGHT.value:
+                if self.right_tracker.is_active:
+                    self.direction = left_tracker_direction
+                    self.turn = Direction.STRAIGHT
+                else:
+                    self.direction = self.turn
+
+
+        cv2.putText(mask, self.direction.name, (500 ,500), 1, 3, (0, 0, 255), 3)
+        if self.turn.value != Direction.STRAIGHT.value:
+            cv2.putText(mask, "Turn: " + self.turn.name, (500 ,550), 1, 3, (0, 0, 255), 3)
+
+
+        self.left_tracker.draw(mask)
+        self.right_tracker.draw(mask)
+
         return mask
 
+def show_image():
+    image = cv2.imread('image.png')
+    mask = car(image)
+    cv2.imshow('Frame', mask)
+    cv2.waitKey()
 
-if __name__ == '__main__':
-    # left_tracker = Tracker((400, 400), 190)
-    # right_tracker = Tracker((800, 400), 190)
-    left_tracker = Tracker((300, 400), 190)
-    right_tracker = Tracker((950, 400), 190)
-    detector = LaneDetector()
-    
-    # image = cv2.imread('image.png')
-    # mask = detector.apply_mask(image)
-    # mask = detector.get_roi(mask)
-    # left_tracker.track(mask)
-    # left_tracker.draw(mask)
-
-    # right_tracker.track(mask)
-    # right_tracker.draw(mask)
-
-    # cv2.imshow('Frame', mask)
-    # cv2.waitKey()
-
+def show_video():
     is_finish = False
     while not is_finish:
         is_finish = False
-        # cap = cv2.VideoCapture('przykladowa_trasa.mp4')
-        cap = cv2.VideoCapture('Untitled.mp4')
+        cap = cv2.VideoCapture('przykladowa_trasa.mp4')
+        # cap = cv2.VideoCapture('Untitled.mp4')
         success, image = cap.read()
         while success and not is_finish:
             success, image = cap.read()
@@ -186,11 +251,7 @@ if __name__ == '__main__':
                 break
             
             
-            mask = detector(image)
-            left_tracker.track(mask)
-            left_tracker.draw(mask)
-            right_tracker.track(mask)
-            right_tracker.draw(mask)
+            mask = car(image)
 
 
             cv2.imshow('Frame', mask)
@@ -203,3 +264,10 @@ if __name__ == '__main__':
                     is_finish = 1
 
         time.sleep(0.1) 
+
+
+if __name__ == '__main__':
+    car = Car()
+    show_video()
+
+
