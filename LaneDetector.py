@@ -230,7 +230,7 @@ class Car:
         self.left_tracker.draw(mask)
         self.right_tracker.draw(mask)
 
-        return mask
+        return mask, self.direction
 
 def show_image():
     image = cv2.imread('image.png')
@@ -251,7 +251,7 @@ def show_video():
                 break
             
             
-            mask = car(image)
+            mask, direction = car(image)
 
 
             cv2.imshow('Frame', mask)
